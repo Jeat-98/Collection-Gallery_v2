@@ -9,6 +9,32 @@ const supabaseClient = window.supabase.createClient(
 let allStamps = [];
 let editingStampId = null;
 
+/*
+    Image editing state
+
+    Each image item is either:
+
+    Existing image:
+    {
+        kind: "existing",
+        url: "..."
+    }
+
+    New image:
+    {
+        kind: "new",
+        file: File,
+        previewUrl: "blob:..."
+    }
+*/
+window.editingImageItems = [];
+window.removedImageUrls = [];
+
+let pendingImageAction = {
+    type: "add",
+    index: null
+};
+
 
 /* ==============================
    LOAD STAMPS
@@ -54,7 +80,9 @@ function filterStamps() {
             .trim();
 
     const category =
-        document.getElementById("categoryFilter").value;
+        document.getElementById("categoryFilter").value
+            .trim()
+            .toLowerCase();
 
     const favoriteFilter =
         document.getElementById("favoriteFilter").value;
@@ -65,12 +93,28 @@ function filterStamps() {
 
     let filtered = allStamps.filter(stamp => {
 
+        /* ==============================
+           SEARCH
+        ============================== */
+
         const matchesSearch =
             !searchText ||
-            (stamp.name || "").toLowerCase().includes(searchText) ||
-            (stamp.description || "").toLowerCase().includes(searchText) ||
-            (stamp.location || "").toLowerCase().includes(searchText);
+            (stamp.name || "")
+                .toLowerCase()
+                .includes(searchText) ||
 
+            (stamp.description || "")
+                .toLowerCase()
+                .includes(searchText) ||
+
+            (stamp.location || "")
+                .toLowerCase()
+                .includes(searchText);
+
+
+        /* ==============================
+           CATEGORY
+        ============================== */
 
         const stampCategories =
             Array.isArray(stamp.category)
@@ -80,68 +124,97 @@ function filterStamps() {
                     : [];
 
 
-         const matchesCategory =
-    category === "all" ||
-    stampCategories.includes(category);
+        const normalizedStampCategories =
+            stampCategories
+                .map(categoryName =>
+                    String(categoryName || "")
+                        .trim()
+                        .toLowerCase()
+                )
+                .filter(Boolean);
 
 
-let matchesFavorite = true;
-
-if (favoriteFilter === "favorite") {
-    matchesFavorite = stamp.favorite === true;
-}
-
-if (favoriteFilter === "not-favorite") {
-    matchesFavorite = stamp.favorite !== true;
-}
+        const matchesCategory =
+            category === "all" ||
+            normalizedStampCategories.includes(category);
 
 
-return (
-    matchesSearch &&
-    matchesCategory &&
-    matchesFavorite
-);           
-         
+        /* ==============================
+           FAVORITE
+        ============================== */
+
+        let matchesFavorite = true;
+
+        if (favoriteFilter === "favorite") {
+            matchesFavorite =
+                stamp.favorite === true;
+        }
+
+        if (favoriteFilter === "not-favorite") {
+            matchesFavorite =
+                stamp.favorite !== true;
+        }
+
+
+        /* ==============================
+           FINAL MATCH
+        ============================== */
+
+        return (
+            matchesSearch &&
+            matchesCategory &&
+            matchesFavorite
+        );
 
     });
 
+
+    /* ==============================
+       SORT
+    ============================== */
 
     filtered.sort((a, b) => {
 
         switch (sortFilter) {
 
             case "newest":
-                return new Date(b.collection_date || 0) -
-                       new Date(a.collection_date || 0);
+                return (
+                    new Date(b.collection_date || 0) -
+                    new Date(a.collection_date || 0)
+                );
 
             case "oldest":
-                return new Date(a.collection_date || 0) -
-                       new Date(b.collection_date || 0);
+                return (
+                    new Date(a.collection_date || 0) -
+                    new Date(b.collection_date || 0)
+                );
 
             case "name-asc":
-    return (a.name || "")
-        .localeCompare(b.name || "");
+                return (a.name || "")
+                    .localeCompare(b.name || "");
 
-case "name-desc":
-    return (b.name || "")
-        .localeCompare(a.name || "");
+            case "name-desc":
+                return (b.name || "")
+                    .localeCompare(a.name || "");
 
-case "price-low":
-    return (a.price ?? 0) -
-           (b.price ?? 0);
+            case "price-low":
+                return (a.price ?? 0) -
+                       (b.price ?? 0);
 
-case "price-high":
-    return (b.price ?? 0) -
-           (a.price ?? 0);
+            case "price-high":
+                return (b.price ?? 0) -
+                       (a.price ?? 0);
 
             default:
                 return 0;
         }
+
     });
 
 
     displayStamps(filtered);
 }
+
 
 /* ==============================
    FILTER FROM COLLECTION OVERVIEW
@@ -156,10 +229,30 @@ function filterByOverviewCategory(category) {
         return;
     }
 
-    categoryFilter.value = category;
+    const cleanCategory =
+        String(category || "").trim();
+
+    const matchingOption =
+        Array.from(categoryFilter.options)
+            .find(option =>
+                option.value.trim().toLowerCase() ===
+                cleanCategory.toLowerCase()
+            );
+
+    if (matchingOption) {
+
+        categoryFilter.value =
+            matchingOption.value;
+
+    } else {
+
+        categoryFilter.value =
+            cleanCategory;
+    }
 
     filterStamps();
 }
+
 
 /* ==============================
    DISPLAY STAMPS
@@ -169,49 +262,100 @@ function displayStamps(items) {
 
     const gallery = document.getElementById("gallery");
 
-    updateCollectionOverview();
+    updateCollectionOverview(items || []);
 
     if (!items || items.length === 0) {
 
-    const hasCollection =
-        allStamps && allStamps.length > 0;
+        const hasCollection =
+            allStamps && allStamps.length > 0;
 
-    gallery.innerHTML = hasCollection
-        ? `
-            <div class="empty">
-                <h2>No matching stamps</h2>
-                <p>
-                    Try changing your search or filters.
-                </p>
-            </div>
-          `
-        : `
-            <div class="empty">
-                <h2>No stamps yet</h2>
-                <p>
-                    Click "+ Add Stamp" to add your first stamp.
-                </p>
-            </div>
-          `;
+        gallery.innerHTML = hasCollection
+            ? `
+                <div class="empty">
+                    <h2>No matching stamps</h2>
+                    <p>
+                        Try changing your search or filters.
+                    </p>
+                </div>
+              `
+            : `
+                <div class="empty">
+                    <h2>No stamps yet</h2>
+                    <p>
+                        Click "+ Add Stamp" to add your first stamp.
+                    </p>
+                </div>
+              `;
 
-    return;
-}
+        return;
+    }
 
 
     gallery.innerHTML = items.map(stamp => {
 
-        const image = stamp.image_url
-            ? `
-                <img
-                    src="${stamp.image_url}"
-                    alt="${stamp.name || "Stamp"}"
-                >
-              `
-            : `
-                <div class="no-image">
-                    No Image
-                </div>
-              `;
+        const imageUrls =
+            Array.isArray(stamp.image_urls) &&
+            stamp.image_urls.length > 0
+                ? stamp.image_urls
+                : stamp.image_url
+                    ? [stamp.image_url]
+                    : [];
+
+
+        const image =
+            imageUrls.length > 0
+
+                ? `
+                    <img
+                        id="main-image-${stamp.id}"
+                        src="${imageUrls[0]}"
+                        alt="${stamp.name || "Stamp"}"
+                    >
+
+                    ${
+                        imageUrls.length > 1
+                            ? `<span class="image-count" aria-label="${imageUrls.length} images">📷 ${imageUrls.length}</span>`
+                            : ""
+                    }
+
+                    ${
+                        imageUrls.length > 1
+                            ? `
+                                <div class="image-thumbnails">
+
+                                    ${imageUrls.map((imageUrl, index) => `
+
+                                        <img
+                                            src="${imageUrl}"
+                                            class="
+                                                image-thumbnail
+                                                ${index === 0 ? "active" : ""}
+                                            "
+                                            alt="${stamp.name || "Stamp"} photo ${index + 1}"
+                                            onclick="
+                                                event.stopPropagation();
+                                                changeMainImage(
+                                                    ${stamp.id},
+                                                    '${escapeAttributeJavaScript(imageUrl)}',
+                                                    this
+                                                );
+                                            "
+                                        >
+
+                                    `).join("")}
+
+                                </div>
+                              `
+                            : ""
+                    }
+
+                  `
+
+                : `
+                    <div class="no-image">
+                        No Image
+                    </div>
+                  `;
 
 
         const favoriteIcon =
@@ -241,32 +385,32 @@ function displayStamps(items) {
 
 
         const categoryBadges =
-    categories.length
-        ? `
-            <div class="card-categories">
+            categories.length
+                ? `
+                    <div class="card-categories">
 
-                ${categories.map(category => {
+                        ${categories.map(category => {
 
-                    const colors =
-                        getCategoryColors(category);
+                            const colors =
+                                getCategoryColors(category);
 
-                    return `
-                        <span
-                            class="category-badge"
-                            style="
-                                background: ${colors.background};
-                                color: ${colors.color};
-                            "
-                        >
-                            ${category}
-                        </span>
-                    `;
+                            return `
+                                <span
+                                    class="category-badge"
+                                    style="
+                                        background: ${colors.background};
+                                        color: ${colors.color};
+                                    "
+                                >
+                                    ${category}
+                                </span>
+                            `;
 
-                }).join("")}
+                        }).join("")}
 
-            </div>
-          `
-        : "";
+                    </div>
+                  `
+                : "";
 
 
         return `
@@ -275,12 +419,12 @@ function displayStamps(items) {
 
                 <!-- IMAGE -->
 
-           <div
-             class="card-image"
-             onclick="handleStampImageClick(event, ${stamp.id})"
-           >
-          ${image}
-           </div>
+                <div
+                    class="card-image"
+                    onclick="handleStampImageClick(event, ${stamp.id})"
+                >
+                    ${image}
+                </div>
 
 
                 <!-- CONTENT -->
@@ -453,6 +597,7 @@ function displayStamps(items) {
     }).join("");
 }
 
+
 /* ==============================
    COLLECTION OVERVIEW
 ============================== */
@@ -464,7 +609,6 @@ function getCategoryColors(category) {
             .trim()
             .toLowerCase();
 
-    /* Existing category colors */
     const fixedColors = {
 
         stamps: {
@@ -500,7 +644,6 @@ function getCategoryColors(category) {
     }
 
 
-    /* Colors for new categories */
     const newCategoryColors = [
 
         {
@@ -546,11 +689,6 @@ function getCategoryColors(category) {
     ];
 
 
-    /*
-       Generate a consistent number
-       from the category name.
-    */
-
     let hash = 0;
 
     for (let i = 0; i < normalized.length; i++) {
@@ -571,11 +709,12 @@ function getCategoryColors(category) {
     return newCategoryColors[index];
 }
 
+
 /* ==============================
    COLLECTION OVERVIEW
 ============================== */
 
-function updateCollectionOverview() {
+function updateCollectionOverview(visibleStamps = allStamps) {
 
     const collectionCount =
         document.getElementById("collectionCount");
@@ -584,10 +723,6 @@ function updateCollectionOverview() {
         document.getElementById("categoryStats");
 
 
-    /* ==============================
-       COLLECTION COUNT
-    ============================== */
-
     if (collectionCount) {
 
         const favoriteCount =
@@ -595,12 +730,39 @@ function updateCollectionOverview() {
                 stamp => stamp.favorite === true
             ).length;
 
-        collectionCount.textContent =
+        const searchActive =
+            document.getElementById("searchInput")?.value.trim();
+
+        const categoryActive =
+            document.getElementById("categoryFilter")?.value !== "all";
+
+        const favoriteActive =
+            document.getElementById("favoriteFilter")?.value !== "all";
+
+        const isFiltered =
+            Boolean(
+                searchActive ||
+                categoryActive ||
+                favoriteActive
+            );
+
+        const visibleCount =
+            visibleStamps.length;
+
+        const totalLabel =
             `${allStamps.length} ${
                 allStamps.length === 1
                     ? "stamp"
                     : "stamps"
-            } · ${favoriteCount} ${
+            }`;
+
+        const resultLabel =
+            isFiltered
+                ? `Showing ${visibleCount} of ${totalLabel}`
+                : totalLabel;
+
+        collectionCount.textContent =
+            `${resultLabel} · ♥ ${favoriteCount} ${
                 favoriteCount === 1
                     ? "favorite"
                     : "favorites"
@@ -612,10 +774,6 @@ function updateCollectionOverview() {
         return;
     }
 
-
-    /* ==============================
-       COUNT CATEGORIES
-    ============================== */
 
     const categoryCounts = {};
 
@@ -654,10 +812,6 @@ function updateCollectionOverview() {
     });
 
 
-    /* ==============================
-       SORT CATEGORIES
-    ============================== */
-
     const sortedCategories =
         Object.entries(categoryCounts)
             .sort(
@@ -665,10 +819,6 @@ function updateCollectionOverview() {
                     a.localeCompare(b)
             );
 
-
-    /* ==============================
-       DISPLAY CATEGORY BADGES
-    ============================== */
 
     categoryStats.innerHTML =
         sortedCategories
@@ -679,35 +829,34 @@ function updateCollectionOverview() {
 
 
                 const categoryFilter =
-    document.getElementById("categoryFilter");
+                    document.getElementById("categoryFilter");
 
-const activeCategory =
-    categoryFilter
-        ? categoryFilter.value
-        : "all";
+                const activeCategory =
+                    categoryFilter
+                        ? categoryFilter.value
+                        : "all";
 
-const isActive =
-    activeCategory !== "all" &&
-    activeCategory === category;
+                const isActive =
+                    activeCategory !== "all" &&
+                    activeCategory === category;
 
 
-return `
-    <span
-    class="
-        category-stat
-        category-stat-clickable
-        ${isActive ? "active" : ""}
-    "
-    data-category-index="${index}"
-    role="button"
-    tabindex="0"
-
-        style="
-            background: ${colors.background};
-            color: ${colors.color};
-        "
-        title="Filter by ${category}"
-    >
+                return `
+                    <span
+                        class="
+                            category-stat
+                            category-stat-clickable
+                            ${isActive ? "active" : ""}
+                        "
+                        data-category-index="${index}"
+                        role="button"
+                        tabindex="0"
+                        style="
+                            background: ${colors.background};
+                            color: ${colors.color};
+                        "
+                        title="Filter by ${category}"
+                    >
                         ${category}
 
                         <span class="category-stat-count">
@@ -719,10 +868,6 @@ return `
             })
             .join("");
 
-
-    /* ==============================
-       CATEGORY CLICK EVENTS
-    ============================== */
 
     const categoryBadges =
         categoryStats.querySelectorAll(
@@ -743,48 +888,49 @@ return `
 
 
         badge.addEventListener(
-    "click",
-    () => {
+            "click",
+            () => {
 
-        if (!category) {
-            return;
-        }
+                if (!category) {
+                    return;
+                }
 
-        filterByOverviewCategory(
-            category
+                filterByOverviewCategory(
+                    category
+                );
+
+            }
         );
 
-    }
-);
 
+        badge.addEventListener(
+            "keydown",
+            event => {
 
-badge.addEventListener(
-    "keydown",
-    (event) => {
+                if (
+                    event.key !== "Enter" &&
+                    event.key !== " "
+                ) {
+                    return;
+                }
 
-        if (
-            event.key !== "Enter" &&
-            event.key !== " "
-        ) {
-            return;
-        }
+                event.preventDefault();
 
-        event.preventDefault();
+                if (!category) {
+                    return;
+                }
 
-        if (!category) {
-            return;
-        }
+                filterByOverviewCategory(
+                    category
+                );
 
-        filterByOverviewCategory(
-            category
+            }
         );
-
-    }
-);
 
     });
 
 }
+
 
 /* ==============================
    DATE
@@ -808,58 +954,901 @@ function formatDate(date) {
 
 
 /* ==============================
-   IMAGE PREVIEW
+   IMAGE HELPERS
 ============================== */
 
-const stampImageInput =
-    document.getElementById("stampImage");
+/*
+    Escape a URL for use inside a
+    JavaScript string embedded in HTML.
+*/
+function escapeAttributeJavaScript(value) {
+
+    return String(value)
+        .replace(/\\/g, "\\\\")
+        .replace(/'/g, "\\'")
+        .replace(/\r/g, "\\r")
+        .replace(/\n/g, "\\n");
+}
 
 
-stampImageInput.addEventListener("change", () => {
+/*
+    Convert a Supabase public image URL
+    back into the Storage path.
 
-    const file =
-        stampImageInput.files[0];
+    Example:
 
-    if (!file) {
+    https://xxxx.supabase.co/storage/v1/object/public/stamps/stamps/file.jpg
+
+    becomes:
+
+    stamps/file.jpg
+*/
+function getOwnedStoragePath(rawUrl) {
+
+    try {
+
+        const cleanUrl =
+            String(rawUrl)
+                .trim()
+                .replace(/^['"]|['"]$/g, "");
+
+        const parsedUrl =
+            new URL(cleanUrl);
+
+        const projectHost =
+            new URL(SUPABASE_URL).host;
+
+        const storagePrefix =
+            "/storage/v1/object/public/stamps/";
+
+
+        if (
+            parsedUrl.host !== projectHost ||
+            !parsedUrl.pathname.startsWith(
+                storagePrefix
+            )
+        ) {
+            return null;
+        }
+
+
+        const path =
+            decodeURIComponent(
+                parsedUrl.pathname.slice(
+                    storagePrefix.length
+                )
+            );
+
+
+        if (
+            !path ||
+            path.startsWith("/") ||
+            path.split("/").includes("..")
+        ) {
+            return null;
+        }
+
+
+        return path;
+
+    } catch (error) {
+
+        console.warn(
+            "Unable to parse Storage image URL:",
+            rawUrl,
+            error
+        );
+
+        return null;
+    }
+}
+
+
+/*
+    Get all image URLs belonging to a stamp.
+*/
+function getStampImageUrls(stamp) {
+
+    const urls = [];
+
+    if (
+        Array.isArray(stamp?.image_urls)
+    ) {
+
+        urls.push(
+            ...stamp.image_urls
+        );
+    }
+
+    if (
+        stamp?.image_url &&
+        !urls.includes(stamp.image_url)
+    ) {
+
+        urls.push(
+            stamp.image_url
+        );
+    }
+
+
+    return urls.filter(Boolean);
+}
+
+
+/*
+    Find Storage paths currently used
+    by every stamp except the stamp
+    being edited/deleted.
+*/
+function getStoragePathsUsedByOtherStamps(
+    excludedStampId = null
+) {
+
+    const paths =
+        new Set();
+
+
+    allStamps
+        .filter(
+            stamp =>
+                stamp.id !== excludedStampId
+        )
+        .forEach(stamp => {
+
+            getStampImageUrls(stamp)
+                .forEach(url => {
+
+                    const path =
+                        getOwnedStoragePath(url);
+
+                    if (path) {
+                        paths.add(path);
+                    }
+
+                });
+
+        });
+
+
+    return paths;
+}
+
+
+/*
+    Delete Storage files safely.
+
+    Files currently used by another
+    stamp are automatically protected.
+*/
+async function deleteStorageImages(
+    imageUrls,
+    excludedStampId = null
+) {
+
+    if (
+        !Array.isArray(imageUrls) ||
+        imageUrls.length === 0
+    ) {
+        return {
+            success: true,
+            deleted: []
+        };
+    }
+
+
+    const paths =
+        new Set();
+
+
+    imageUrls.forEach(url => {
+
+        const path =
+            getOwnedStoragePath(url);
+
+        if (path) {
+            paths.add(path);
+        } else {
+            console.warn(
+                "Skipping malformed or non-project image URL:",
+                url
+            );
+        }
+
+    });
+
+
+    const protectedPaths =
+        getStoragePathsUsedByOtherStamps(
+            excludedStampId
+        );
+
+
+    protectedPaths.forEach(path => {
+        paths.delete(path);
+    });
+
+
+    if (paths.size === 0) {
+
+        return {
+            success: true,
+            deleted: []
+        };
+    }
+
+
+    const pathsToDelete =
+        [...paths];
+
+
+    const { error } =
+        await supabaseClient.storage
+            .from("stamps")
+            .remove(pathsToDelete);
+
+
+    if (error) {
+
+        console.error(
+            "Storage deletion error:",
+            error
+        );
+
+        return {
+            success: false,
+            deleted: [],
+            error
+        };
+    }
+
+
+    console.log(
+        "Storage images deleted:",
+        pathsToDelete
+    );
+
+
+    return {
+        success: true,
+        deleted: pathsToDelete
+    };
+}
+
+
+/*
+    Revoke local blob preview URLs.
+*/
+function revokeImagePreviewUrls() {
+
+    if (
+        !Array.isArray(
+            window.editingImageItems
+        )
+    ) {
         return;
     }
 
 
-    const reader =
-        new FileReader();
+    window.editingImageItems
+        .forEach(item => {
+
+            if (
+                item.kind === "new" &&
+                item.previewUrl
+            ) {
+
+                URL.revokeObjectURL(
+                    item.previewUrl
+                );
+            }
+
+        });
+}
 
 
-    reader.onload = function(event) {
+/* ==============================
+   IMAGE UPLOAD UI
+============================== */
 
-        let preview =
-            document.getElementById("imagePreview");
+function setupImageUploadUI() {
+
+    const input =
+        document.getElementById("stampImage");
+
+    if (!input) {
+        console.warn(
+            "stampImage input not found."
+        );
+        return;
+    }
 
 
-        if (!preview) {
+    /*
+        Keep the original input for
+        compatibility, but hide it.
 
-            preview =
+        The new UI is controlled by
+        the + New Image button.
+    */
+    input.hidden = true;
+    input.style.display = "none";
+
+
+    /*
+        Make sure the preview container
+        exists.
+    */
+    let previewContainer =
+        document.getElementById(
+            "imagePreviewContainer"
+        );
+
+
+    if (!previewContainer) {
+
+        previewContainer =
+            document.createElement("div");
+
+        previewContainer.id =
+            "imagePreviewContainer";
+
+        previewContainer.className =
+            "image-preview-container";
+
+        input.parentElement.appendChild(
+            previewContainer
+        );
+    }
+
+
+    /*
+        Make sure + New Image button
+        exists.
+    */
+    let newImageButton =
+        document.getElementById(
+            "addNewImageButton"
+        );
+
+
+    if (!newImageButton) {
+
+        newImageButton =
+            document.createElement("button");
+
+        newImageButton.type =
+            "button";
+
+        newImageButton.id =
+            "addNewImageButton";
+
+        newImageButton.className =
+            "new-image-button";
+
+        newImageButton.textContent =
+            "＋ New Image";
+
+
+        input.parentElement.appendChild(
+            newImageButton
+        );
+    }
+
+
+    /*
+        Prevent duplicate event listeners.
+    */
+    if (
+        newImageButton.dataset.bound !== "true"
+    ) {
+
+        newImageButton.dataset.bound =
+            "true";
+
+        newImageButton.addEventListener(
+            "click",
+            event => {
+
+                event.preventDefault();
+                event.stopPropagation();
+
+                pendingImageAction = {
+                    type: "add",
+                    index: null
+                };
+
+                input.value = "";
+
+                input.click();
+            }
+        );
+    }
+
+
+    /*
+        File input event.
+    */
+    if (
+        input.dataset.bound !== "true"
+    ) {
+
+        input.dataset.bound =
+            "true";
+
+        input.addEventListener(
+            "change",
+            handleImageFileSelection
+        );
+    }
+}
+
+
+/*
+    Handle files selected through
+    + New Image or image replacement.
+*/
+function handleImageFileSelection() {
+
+    const input =
+        document.getElementById("stampImage");
+
+    if (!input) {
+        return;
+    }
+
+
+    const files =
+        Array.from(
+            input.files || []
+        );
+
+
+    if (files.length === 0) {
+        return;
+    }
+
+
+    const selectedFile =
+        files[0];
+
+
+    /*
+        Only one image is used for a
+        replacement action.
+    */
+    if (
+        pendingImageAction.type === "replace"
+    ) {
+
+        replaceImageItem(
+            pendingImageAction.index,
+            selectedFile
+        );
+
+    } else {
+
+        /*
+            Add all selected files when
+            using + New Image.
+        */
+        files.forEach(file => {
+            addNewImageItem(file);
+        });
+    }
+
+
+    input.value = "";
+
+    pendingImageAction = {
+        type: "add",
+        index: null
+    };
+}
+
+
+/*
+    Add a new local image.
+*/
+function addNewImageItem(file) {
+
+    if (
+        !file ||
+        !file.type.startsWith("image/")
+    ) {
+
+        alert(
+            "Please select a valid image file."
+        );
+
+        return;
+    }
+
+
+    const previewUrl =
+        URL.createObjectURL(file);
+
+
+    window.editingImageItems.push({
+        kind: "new",
+        file: file,
+        previewUrl: previewUrl
+    });
+
+
+    renderImagePreviews();
+}
+
+
+/*
+    Replace an existing/new image.
+*/
+function replaceImageItem(index, file) {
+
+    if (
+        !file ||
+        !file.type.startsWith("image/")
+    ) {
+
+        alert(
+            "Please select a valid image file."
+        );
+
+        return;
+    }
+
+
+    const items =
+        window.editingImageItems;
+
+
+    if (
+        index < 0 ||
+        index >= items.length
+    ) {
+        return;
+    }
+
+
+    const oldItem =
+        items[index];
+
+
+    /*
+        If replacing an existing
+        Supabase image, remember it
+        for Storage deletion after
+        the database update succeeds.
+    */
+    if (
+        oldItem.kind === "existing" &&
+        oldItem.url
+    ) {
+
+        if (
+            !window.removedImageUrls.includes(
+                oldItem.url
+            )
+        ) {
+
+            window.removedImageUrls.push(
+                oldItem.url
+            );
+        }
+    }
+
+
+    /*
+        If replacing a new local image,
+        there is no Storage file yet.
+    */
+    if (
+        oldItem.kind === "new" &&
+        oldItem.previewUrl
+    ) {
+
+        URL.revokeObjectURL(
+            oldItem.previewUrl
+        );
+    }
+
+
+    const previewUrl =
+        URL.createObjectURL(file);
+
+
+    items[index] = {
+        kind: "new",
+        file: file,
+        previewUrl: previewUrl
+    };
+
+
+    renderImagePreviews();
+}
+
+
+/*
+    Remove an image from the current
+    edit/add form.
+*/
+function removeImageItem(index) {
+
+    const items =
+        window.editingImageItems;
+
+
+    if (
+        index < 0 ||
+        index >= items.length
+    ) {
+        return;
+    }
+
+
+    const item =
+        items[index];
+
+
+    /*
+        Existing Supabase image:
+        remember it for Storage cleanup.
+    */
+    if (
+        item.kind === "existing" &&
+        item.url
+    ) {
+
+        if (
+            !window.removedImageUrls.includes(
+                item.url
+            )
+        ) {
+
+            window.removedImageUrls.push(
+                item.url
+            );
+        }
+    }
+
+
+    /*
+        Local image:
+        simply release its object URL.
+    */
+    if (
+        item.kind === "new" &&
+        item.previewUrl
+    ) {
+
+        URL.revokeObjectURL(
+            item.previewUrl
+        );
+    }
+
+
+    items.splice(
+        index,
+        1
+    );
+
+
+    renderImagePreviews();
+}
+
+
+/*
+    Render all existing and newly
+    selected images.
+*/
+function renderImagePreviews() {
+
+    const container =
+        document.getElementById(
+            "imagePreviewContainer"
+        );
+
+
+    if (!container) {
+        return;
+    }
+
+
+    container.innerHTML = "";
+
+
+    window.editingImageItems.forEach(
+        (item, index) => {
+
+            const previewItem =
+                document.createElement("div");
+
+            previewItem.className =
+                "image-preview-item";
+
+
+            /*
+                Image
+            */
+            const preview =
                 document.createElement("img");
-
-            preview.id =
-                "imagePreview";
 
             preview.className =
                 "image-preview";
 
 
-            stampImageInput
-                .parentElement
-                .appendChild(preview);
+            preview.src =
+                item.kind === "existing"
+                    ? item.url
+                    : item.previewUrl;
+
+
+            preview.alt =
+                `Stamp image ${index + 1}`;
+
+
+            preview.title =
+                "Click image to replace";
+
+
+            /*
+                CLICK IMAGE TO REPLACE
+            */
+            preview.addEventListener(
+                "click",
+                event => {
+
+                    event.preventDefault();
+                    event.stopPropagation();
+
+                    pendingImageAction = {
+                        type: "replace",
+                        index: index
+                    };
+
+                    const input =
+                        document.getElementById(
+                            "stampImage"
+                        );
+
+                    if (!input) {
+                        return;
+                    }
+
+                    input.value = "";
+                    input.click();
+                }
+            );
+
+
+            /*
+                Change button
+            */
+            const changeButton =
+                document.createElement("button");
+
+            changeButton.type =
+                "button";
+
+            changeButton.className =
+                "change-image-button";
+
+            changeButton.textContent =
+                "Change";
+
+            changeButton.title =
+                "Replace this image";
+
+
+            changeButton.addEventListener(
+                "click",
+                event => {
+
+                    event.preventDefault();
+                    event.stopPropagation();
+
+                    pendingImageAction = {
+                        type: "replace",
+                        index: index
+                    };
+
+                    const input =
+                        document.getElementById(
+                            "stampImage"
+                        );
+
+                    if (!input) {
+                        return;
+                    }
+
+                    input.value = "";
+                    input.click();
+                }
+            );
+
+
+            /*
+                Remove button
+            */
+            const removeButton =
+                document.createElement("button");
+
+            removeButton.type =
+                "button";
+
+            removeButton.className =
+                "remove-image-button";
+
+            removeButton.textContent =
+                "Remove";
+
+            removeButton.setAttribute(
+                "aria-label",
+                `Remove image ${index + 1}`
+            );
+
+
+            removeButton.addEventListener(
+                "click",
+                event => {
+
+                    event.preventDefault();
+                    event.stopPropagation();
+
+                    removeImageItem(index);
+                }
+            );
+
+
+            /*
+                Buttons wrapper
+            */
+            const actions =
+                document.createElement("div");
+
+            actions.className =
+                "image-preview-actions";
+
+
+            actions.append(
+                changeButton,
+                removeButton
+            );
+
+
+            previewItem.append(
+                preview,
+                actions
+            );
+
+
+            container.appendChild(
+                previewItem
+            );
         }
+    );
 
 
-        preview.src =
-            event.target.result;
-    };
+    /*
+        Empty-state message
+    */
+    if (
+        window.editingImageItems.length === 0
+    ) {
 
+        const emptyMessage =
+            document.createElement("div");
 
-    reader.readAsDataURL(file);
-});
+        emptyMessage.className =
+            "image-preview-empty";
+
+        emptyMessage.textContent =
+            "No images selected.";
+
+        container.appendChild(
+            emptyMessage
+        );
+    }
+}
 
 
 /* ==============================
@@ -890,77 +1879,321 @@ let availableCategories = [];
 
 
 async function loadCategories() {
+
     const { data, error } =
         await supabaseClient
             .from("Categories")
-            .select("*")
+            .select("id, name")
             .order("name", { ascending: true });
 
     if (error) {
-        console.error("Unable to load categories:", error);
+
+        console.error(
+            "Unable to load categories:",
+            error
+        );
+
         return;
     }
 
-    availableCategories = data || [];
+    availableCategories =
+        (data || []).map(category => ({
+            id: category.id,
+            name: category.name.trim()
+        }));
+
+
+    console.log(
+        "Categories loaded from Supabase:",
+        availableCategories
+    );
 
     renderCategoryCheckboxes();
     renderCategoryFilter();
-    renderCategoryManager();
+
 }
 
-function renderCategoryManager() {
 
-    const container =
-        document.getElementById("categoryManagerList");
+document
+    .getElementById("manageCategoriesButton")
+    .addEventListener("click", () => {
 
-    if (!container) {
+        const container =
+            document.getElementById("categoryOptions");
+
+        if (!container) {
+            return;
+        }
+
+        const isManaging =
+            container.dataset.manageMode === "true";
+
+        container.dataset.manageMode =
+            isManaging ? "false" : "true";
+
+        renderCategoryCheckboxes();
+    });
+
+
+/* ==============================
+   EDIT CATEGORY
+============================== */
+
+async function editCategory(categoryId) {
+
+    const category =
+        availableCategories.find(
+            item => item.id === categoryId
+        );
+
+    if (!category) {
+        alert("Category not found.");
         return;
     }
 
-    container.innerHTML =
-        availableCategories.map(category => {
+    const oldName =
+        String(category.name || "").trim();
 
-            const colors =
-                getCategoryColors(category.name);
+    const newName =
+        prompt(
+            "Enter the new category name:",
+            oldName
+        );
 
-            return `
-                <div
-                    class="category-manager-item"
-                    style="
-                        background: ${colors.background};
-                        color: ${colors.color};
-                    "
-                >
+    if (newName === null) {
+        return;
+    }
 
-                    <span class="category-manager-name">
-                        ${category.name}
-                    </span>
+    const cleanName =
+        newName.trim();
 
-                    <button
-                        type="button"
-                        class="category-manager-button"
-                        title="Edit category"
-                        onclick="editCategory(${category.id})"
-                    >
-                        ✏️
-                    </button>
+    if (!cleanName) {
+        alert("Category name cannot be empty.");
+        return;
+    }
 
-                    <button
-                        type="button"
-                        class="category-manager-button"
-                        title="Delete category"
-                        onclick="deleteCategory(${category.id})"
-                    >
-                        🗑️
-                    </button>
+    if (
+        cleanName.toLowerCase() ===
+        oldName.toLowerCase()
+    ) {
+        return;
+    }
 
-                </div>
-            `;
 
-        }).join("");
+    const alreadyExists =
+        availableCategories.some(item =>
+            item.id !== categoryId &&
+            String(item.name || "")
+                .trim()
+                .toLowerCase() ===
+            cleanName.toLowerCase()
+        );
+
+    if (alreadyExists) {
+        alert("This category already exists.");
+        return;
+    }
+
+
+    const {
+        data: updatedCategories,
+        error: categoryError
+    } =
+        await supabaseClient
+            .from("Categories")
+            .update({
+                name: cleanName
+            })
+            .eq("id", categoryId)
+            .select();
+
+
+    if (categoryError) {
+
+        console.error(
+            "Unable to rename category:",
+            categoryError
+        );
+
+        alert(
+            "Unable to rename category: " +
+            categoryError.message
+        );
+
+        return;
+    }
+
+
+    console.log(
+        "CATEGORY UPDATE RESULT:",
+        updatedCategories
+    );
+
+
+    if (
+        !updatedCategories ||
+        updatedCategories.length === 0
+    ) {
+
+        console.error(
+            "No category row was updated.",
+            {
+                categoryId: categoryId,
+                oldName: oldName,
+                newName: cleanName
+            }
+        );
+
+        alert(
+            "The category could not be updated.\n\n" +
+            "No matching category row was found in Supabase."
+        );
+
+        return;
+    }
+
+
+    const {
+        data: stamps,
+        error: stampsLoadError
+    } =
+        await supabaseClient
+            .from("Stamps")
+            .select("id, category");
+
+
+    console.log(
+        "STAMPS FROM SUPABASE BEFORE CATEGORY UPDATE:",
+        stamps
+    );
+
+    console.log(
+        "OLD CATEGORY:",
+        oldName
+    );
+
+    console.log(
+        "NEW CATEGORY:",
+        cleanName
+    );
+
+
+    if (stampsLoadError) {
+
+        console.error(
+            "Unable to load stamps:",
+            stampsLoadError
+        );
+
+        alert(
+            "Category was renamed, but stamps could not be checked: " +
+            stampsLoadError.message
+        );
+
+        await loadCategories();
+
+        return;
+    }
+
+
+    let updatedStampCount = 0;
+
+
+    for (const stamp of stamps || []) {
+
+        const categories =
+            Array.isArray(stamp.category)
+                ? stamp.category
+                : typeof stamp.category === "string"
+                    ? [stamp.category]
+                    : [];
+
+
+        const hasOldCategory =
+            categories.some(categoryName =>
+                String(categoryName || "")
+                    .trim()
+                    .toLowerCase() ===
+                oldName.toLowerCase()
+            );
+
+
+        if (!hasOldCategory) {
+            continue;
+        }
+
+
+        const updatedCategories =
+            categories.map(categoryName => {
+
+                const currentName =
+                    String(categoryName || "").trim();
+
+                if (
+                    currentName.toLowerCase() ===
+                    oldName.toLowerCase()
+                ) {
+                    return cleanName;
+                }
+
+                return currentName;
+            });
+
+
+        const { error: stampError } =
+            await supabaseClient
+                .from("Stamps")
+                .update({
+                    category: updatedCategories
+                })
+                .eq("id", stamp.id);
+
+
+        if (stampError) {
+
+            console.error(
+                "Unable to update stamp category:",
+                stampError
+            );
+
+            alert(
+                `Category was renamed, but stamp "${stamp.id}" could not be updated: ` +
+                stampError.message
+            );
+
+            return;
+        }
+
+
+        updatedStampCount++;
+
+        console.log(
+            "STAMP CATEGORY UPDATED:",
+            stamp.id,
+            updatedCategories
+        );
+    }
+
+
+    await loadCategories();
+
+    await loadStamps();
+
+
+    alert(
+        `Category "${oldName}" has been renamed to "${cleanName}".\n\n` +
+        `${updatedStampCount} stamp(s) updated.`
+    );
 }
 
-function renderCategoryCheckboxes(selectedCategories = []) {
+
+/* ==============================
+   CATEGORY CHECKBOXES
+============================== */
+
+function renderCategoryCheckboxes(
+    selectedCategories = null
+) {
 
     const container =
         document.getElementById("categoryOptions");
@@ -969,16 +2202,38 @@ function renderCategoryCheckboxes(selectedCategories = []) {
         return;
     }
 
+
+    if (selectedCategories === null) {
+
+        selectedCategories =
+            Array.from(
+                document.querySelectorAll(
+                    'input[name="stampCategory"]:checked'
+                )
+            ).map(
+                checkbox => checkbox.value
+            );
+    }
+
+
+    const manageMode =
+        container.dataset.manageMode === "true";
+
+
     container.innerHTML =
         availableCategories.map(category => {
 
             const checked =
-                selectedCategories.includes(category.name)
+                selectedCategories.includes(
+                    category.name
+                )
                     ? "checked"
                     : "";
 
+
             return `
                 <label>
+
                     <input
                         type="checkbox"
                         name="stampCategory"
@@ -986,12 +2241,56 @@ function renderCategoryCheckboxes(selectedCategories = []) {
                         ${checked}
                     >
 
-                    ${category.name}
+                    <span>
+                        ${category.name}
+                    </span>
+
+                    ${
+                        manageMode
+                            ? `
+                                <span class="category-manage-actions">
+
+                                    <button
+                                        type="button"
+                                        class="category-manage-button edit-category-button"
+                                        title="Edit category"
+                                        onclick="
+                                            event.preventDefault();
+                                            event.stopPropagation();
+                                            editCategory(${category.id});
+                                        "
+                                    >
+                                        ✏️
+                                    </button>
+
+                                    <button
+                                        type="button"
+                                        class="category-manage-button delete-category-button"
+                                        title="Delete category"
+                                        onclick="
+                                            event.preventDefault();
+                                            event.stopPropagation();
+                                            deleteCategory(${category.id});
+                                        "
+                                    >
+                                        🗑️
+                                    </button>
+
+                                </span>
+                              `
+                            : ""
+                    }
+
                 </label>
             `;
 
         }).join("");
 }
+
+
+/* ==============================
+   CATEGORY FILTER
+============================== */
 
 function renderCategoryFilter() {
 
@@ -1003,11 +2302,24 @@ function renderCategoryFilter() {
     }
 
 
-    filter.innerHTML = `
-        <option value="all">
-            ▦ All Categories
-        </option>
-    `;
+    const currentValue =
+        filter.value;
+
+
+    filter.innerHTML = "";
+
+
+    const allOption =
+        document.createElement("option");
+
+    allOption.value = "all";
+
+    allOption.textContent =
+        "▦ All Categories";
+
+    filter.appendChild(
+        allOption
+    );
 
 
     availableCategories.forEach(category => {
@@ -1015,12 +2327,54 @@ function renderCategoryFilter() {
         const option =
             document.createElement("option");
 
-        option.value = category.name;
-        option.textContent = category.name;
+        option.value =
+            category.name;
 
-        filter.appendChild(option);
+        option.textContent =
+            category.name;
+
+        filter.appendChild(
+            option
+        );
     });
+
+
+    const stillExists =
+        Array.from(filter.options)
+            .some(
+                option =>
+                    option.value === currentValue
+            );
+
+
+    if (
+        currentValue &&
+        currentValue !== "all" &&
+        stillExists
+    ) {
+
+        filter.value =
+            currentValue;
+
+    } else {
+
+        filter.value =
+            "all";
+    }
+
+
+    console.log(
+        "Category filter updated:",
+        availableCategories.map(
+            category => category.name
+        )
+    );
 }
+
+
+/* ==============================
+   ADD CATEGORY
+============================== */
 
 document
     .getElementById("addCategoryButton")
@@ -1036,7 +2390,8 @@ document
                 "newCategoryInput"
             );
 
-        box.style.display = "flex";
+        box.style.display =
+            "flex";
 
         input.focus();
     });
@@ -1044,33 +2399,44 @@ document
 
 document
     .getElementById("saveCategoryButton")
-    .addEventListener("click", addNewCategory);
+    .addEventListener(
+        "click",
+        addNewCategory
+    );
 
 
 document
     .getElementById("newCategoryInput")
-    .addEventListener("keydown", event => {
+    .addEventListener(
+        "keydown",
+        event => {
 
-        if (event.key === "Enter") {
+            if (event.key === "Enter") {
 
-            event.preventDefault();
+                event.preventDefault();
 
-            addNewCategory();
+                addNewCategory();
+            }
         }
-    });
+    );
 
 
 async function addNewCategory() {
 
     const input =
-        document.getElementById("newCategoryInput");
+        document.getElementById(
+            "newCategoryInput"
+        );
 
     const name =
         input.value.trim();
 
+
     if (!name) {
 
-        alert("Please enter a category name.");
+        alert(
+            "Please enter a category name."
+        );
 
         input.focus();
 
@@ -1078,7 +2444,6 @@ async function addNewCategory() {
     }
 
 
-    // Check if category already exists
     const alreadyExists =
         availableCategories.some(
             category =>
@@ -1086,9 +2451,12 @@ async function addNewCategory() {
                 name.toLowerCase()
         );
 
+
     if (alreadyExists) {
 
-        alert("This category already exists.");
+        alert(
+            "This category already exists."
+        );
 
         input.focus();
 
@@ -1096,7 +2464,6 @@ async function addNewCategory() {
     }
 
 
-    // Remember currently selected categories
     const selectedCategories =
         Array.from(
             document.querySelectorAll(
@@ -1107,8 +2474,10 @@ async function addNewCategory() {
         );
 
 
-    // Add new category to Supabase
-    const { data, error } =
+    const {
+        data,
+        error
+    } =
         await supabaseClient
             .from("Categories")
             .insert([
@@ -1136,8 +2505,10 @@ async function addNewCategory() {
     }
 
 
-    // Add new category to local list
-    availableCategories.push(data);
+    availableCategories.push(
+        data
+    );
+
 
     availableCategories.sort(
         (a, b) =>
@@ -1145,27 +2516,27 @@ async function addNewCategory() {
     );
 
 
-    // Keep existing selections
-    selectedCategories.push(name);
+    selectedCategories.push(
+        name
+    );
 
 
-    // Rebuild checkboxes
     renderCategoryCheckboxes(
         selectedCategories
     );
 
 
-    // Clear and hide new category box
     input.value = "";
 
     document.getElementById(
         "newCategoryBox"
-    ).style.display = "none";
+    ).style.display =
+        "none";
 
 
-    // Update the main category filter
     renderCategoryFilter();
 }
+
 
 /* ==============================
    RESET FORM
@@ -1173,15 +2544,41 @@ async function addNewCategory() {
 
 function resetStampForm() {
 
+    /*
+        Release temporary local image URLs.
+    */
+    revokeImagePreviewUrls();
+
+
     editingStampId = null;
+
+
+    window.editingImageItems = [];
+
+    window.removedImageUrls = [];
+
+
+    pendingImageAction = {
+        type: "add",
+        index: null
+    };
+
 
     stampForm.reset();
 
-    addForm.classList.remove("editing-mode");
 
-    addForm.style.display = "none";
+    addForm.classList.remove(
+        "editing-mode"
+    );
 
-    addStampButton.style.display = "block";
+
+    addForm.style.display =
+        "none";
+
+
+    addStampButton.style.display =
+        "block";
+
 
     document.body.classList.remove(
         "editing-popup-open"
@@ -1189,9 +2586,13 @@ function resetStampForm() {
 
 
     const formTitle =
-        document.querySelector("#addForm h2");
+        document.querySelector(
+            "#addForm h2"
+        );
+
 
     if (formTitle) {
+
         formTitle.textContent =
             "Add New Stamp";
     }
@@ -1202,133 +2603,189 @@ function resetStampForm() {
             'button[type="submit"]'
         );
 
+
     if (submitButton) {
+
         submitButton.textContent =
             "Save Stamp";
     }
 
 
-    const preview =
-        document.getElementById("imagePreview");
+    const previewContainer =
+        document.getElementById(
+            "imagePreviewContainer"
+        );
 
-    if (preview) {
-        preview.remove();
+
+    if (previewContainer) {
+
+        previewContainer.innerHTML = "";
+    }
+
+
+    const stampImageInput =
+        document.getElementById(
+            "stampImage"
+        );
+
+
+    if (stampImageInput) {
+
+        stampImageInput.value = "";
     }
 }
 
+
 /* ==============================
-   CLOSE ADD / EDIT POPUP WHEN
-   CLICKING OUTSIDE
+   CLOSE ADD / EDIT POPUP
 ============================== */
 
-document.addEventListener("click", (event) => {
+document.addEventListener(
+    "click",
+    event => {
 
-    const addForm =
-        document.getElementById("addForm");
+        const addForm =
+            document.getElementById(
+                "addForm"
+            );
 
-    const addStampButton =
-        document.getElementById("addStampButton");
+        const addStampButton =
+            document.getElementById(
+                "addStampButton"
+            );
 
-    // Popup is not open
-    if (
-        !addForm ||
-        addForm.style.display === "none"
-    ) {
-        return;
+
+        if (
+            !addForm ||
+            addForm.style.display === "none"
+        ) {
+            return;
+        }
+
+
+        if (
+            addForm.contains(
+                event.target
+            )
+        ) {
+            return;
+        }
+
+
+        if (
+            addStampButton &&
+            addStampButton.contains(
+                event.target
+            )
+        ) {
+            return;
+        }
+
+
+        if (
+            event.target.closest(
+                ".edit-button"
+            )
+        ) {
+            return;
+        }
+
+
+        if (
+            event.target.closest(
+                ".delete-button"
+            )
+        ) {
+            return;
+        }
+
+
+        resetStampForm();
     }
+);
 
-    // Click inside popup
-    if (addForm.contains(event.target)) {
-        return;
-    }
-
-    // Click Add Stamp button
-    if (
-        addStampButton &&
-        addStampButton.contains(event.target)
-    ) {
-        return;
-    }
-
-    // Click Edit button
-    // Let editStamp() handle opening the popup
-    if (event.target.closest(".edit-button")) {
-        return;
-    }
-
-    // Click Delete button
-    // Let deleteStamp() handle the action
-    if (event.target.closest(".delete-button")) {
-        return;
-    }
-
-    // Anything else outside → close popup
-    resetStampForm();
-});
 
 /* ==============================
    ADD STAMP
 ============================== */
 
+addStampButton.addEventListener(
+    "click",
+    () => {
 
-addStampButton.addEventListener("click", () => {
-
-    editingStampId = null;
-
-    stampForm.reset();
-
-
-    const formTitle =
-        document.querySelector("#addForm h2");
-
-    if (formTitle) {
-        formTitle.textContent =
-            "Add New Stamp";
-    }
+        revokeImagePreviewUrls();
 
 
-    const submitButton =
-        stampForm.querySelector(
-            'button[type="submit"]'
+        editingStampId = null;
+
+
+        window.editingImageItems = [];
+
+        window.removedImageUrls = [];
+
+
+        pendingImageAction = {
+            type: "add",
+            index: null
+        };
+
+
+        stampForm.reset();
+
+
+        const formTitle =
+            document.querySelector(
+                "#addForm h2"
+            );
+
+
+        if (formTitle) {
+
+            formTitle.textContent =
+                "Add New Stamp";
+        }
+
+
+        const submitButton =
+            stampForm.querySelector(
+                'button[type="submit"]'
+            );
+
+
+        if (submitButton) {
+
+            submitButton.textContent =
+                "Save Stamp";
+        }
+
+
+        renderImagePreviews();
+
+
+        addForm.classList.add(
+            "editing-mode"
         );
 
-    if (submitButton) {
-        submitButton.textContent =
-            "Save Stamp";
+
+        addForm.style.display =
+            "block";
+
+
+        addStampButton.style.display =
+            "none";
+
+
+        document.body.classList.add(
+            "editing-popup-open"
+        );
     }
+);
 
-
-    const preview =
-        document.getElementById("imagePreview");
-
-    if (preview) {
-        preview.remove();
-    }
-
-
-    /* Open popup */
-
-    addForm.classList.add(
-        "editing-mode"
-    );
-
-    addForm.style.display =
-        "block";
-
-    addStampButton.style.display =
-        "none";
-
-
-    /* Prevent background scrolling */
-
-    document.body.classList.add(
-        "editing-popup-open"
-    );
-});
 
 /* ==============================
    CANCEL
 ============================== */
+
 editCloseButton.addEventListener(
     "click",
     () => {
@@ -1336,240 +2793,556 @@ editCloseButton.addEventListener(
     }
 );
 
-cancelButton.addEventListener("click", () => {
 
-    resetStampForm();
-});
+cancelButton.addEventListener(
+    "click",
+    () => {
+        resetStampForm();
+    }
+);
 
 
 /* ==============================
    SAVE / UPDATE STAMP
 ============================== */
 
-stampForm.addEventListener("submit", async (event) => {
+stampForm.addEventListener(
+    "submit",
+    async event => {
 
-    event.preventDefault();
-
-
-    const imageFile =
-        document.getElementById("stampImage")
-            .files[0];
+        event.preventDefault();
 
 
-    let imageUrl = null;
-
-
-    /* Keep existing image during edit */
-
-    if (editingStampId) {
-
-        const existingStamp =
-            allStamps.find(
-                item => item.id === editingStampId
+        const selectedCategories =
+            Array.from(
+                document.querySelectorAll(
+                    '#categoryOptions input[name="stampCategory"]:checked'
+                )
+            )
+            .map(
+                input =>
+                    input.value.trim()
+            )
+            .filter(
+                value =>
+                    value !== ""
             );
 
 
-        imageUrl =
-            existingStamp
-                ? existingStamp.image_url
-                : null;
-    }
+        console.log(
+            "Selected categories:",
+            selectedCategories
+        );
 
 
-    /* Upload new image */
-
-    if (imageFile) {
-
-        const fileExtension =
-            imageFile.name
-                .split(".")
-                .pop();
+        /*
+            Snapshot the current image state.
+        */
+        const currentImageItems =
+            [...window.editingImageItems];
 
 
-        const fileName =
-            `${Date.now()}-${Math.random()
-                .toString(36)
-                .substring(2)}.${fileExtension}`;
+        /*
+            Existing URLs that will remain.
+        */
+        let imageUrls = [];
 
 
-        const filePath =
-            `stamps/${fileName}`;
+        /*
+            New Storage paths uploaded during
+            this save operation.
+
+            Used for rollback if the DB save fails.
+        */
+        const newlyUploadedPaths = [];
 
 
-        const { error: uploadError } =
-            await supabaseClient.storage
-                .from("stamps")
-                .upload(
-                    filePath,
-                    imageFile
+        /*
+            Existing images.
+        */
+        currentImageItems.forEach(item => {
+
+            if (
+                item.kind === "existing" &&
+                item.url
+            ) {
+
+                imageUrls.push(
+                    item.url
+                );
+            }
+
+        });
+
+
+        /*
+            Upload new local images.
+        */
+        for (
+            const imageItem of currentImageItems
+        ) {
+
+            if (
+                imageItem.kind !== "new" ||
+                !imageItem.file
+            ) {
+                continue;
+            }
+
+
+            const imageFile =
+                imageItem.file;
+
+
+            console.log(
+                "Uploading image:",
+                imageFile.name
+            );
+
+
+            const fileExtension =
+                imageFile.name
+                    .split(".")
+                    .pop()
+                    .toLowerCase();
+
+
+            const fileName =
+                `${Date.now()}-${Math.random()
+                    .toString(36)
+                    .substring(2)}.${fileExtension}`;
+
+
+            const filePath =
+                `stamps/${fileName}`;
+
+
+            const {
+                data: uploadData,
+                error: uploadError
+            } =
+                await supabaseClient.storage
+                    .from("stamps")
+                    .upload(
+                        filePath,
+                        imageFile
+                    );
+
+
+            if (uploadError) {
+
+                console.error(
+                    "IMAGE UPLOAD ERROR:",
+                    uploadError
                 );
 
 
-        if (uploadError) {
+                /*
+                    Roll back any files already
+                    uploaded during this save.
+                */
+                if (
+                    newlyUploadedPaths.length
+                ) {
 
-            console.error(
-                "Image upload error:",
-                uploadError
+                    await supabaseClient.storage
+                        .from("stamps")
+                        .remove(
+                            newlyUploadedPaths
+                        );
+                }
+
+
+                alert(
+                    "Unable to upload image:\n\n" +
+                    uploadError.message
+                );
+
+                return;
+            }
+
+
+            newlyUploadedPaths.push(
+                filePath
             );
 
-            alert(
-                "Unable to upload image: " +
-                uploadError.message
+
+            console.log(
+                "Image uploaded successfully:",
+                uploadData
             );
 
-            return;
+
+            const {
+                data: publicUrlData
+            } =
+                supabaseClient.storage
+                    .from("stamps")
+                    .getPublicUrl(
+                        filePath
+                    );
+
+
+            if (
+                !publicUrlData ||
+                !publicUrlData.publicUrl
+            ) {
+
+                console.error(
+                    "Unable to generate public URL."
+                );
+
+
+                await supabaseClient.storage
+                    .from("stamps")
+                    .remove(
+                        newlyUploadedPaths
+                    );
+
+
+                alert(
+                    "Image uploaded, but the public image URL could not be created."
+                );
+
+                return;
+            }
+
+
+            imageUrls.push(
+                publicUrlData.publicUrl
+            );
+
+
+            console.log(
+                "Image URL added:",
+                publicUrlData.publicUrl
+            );
         }
 
 
-        const { data: publicUrlData } =
-            supabaseClient.storage
-                .from("stamps")
-                .getPublicUrl(filePath);
+        /*
+            MAIN IMAGE
+        */
+        const imageUrl =
+            imageUrls.length > 0
+                ? imageUrls[0]
+                : null;
 
 
-        imageUrl =
-            publicUrlData.publicUrl;
-    }
-
-
-    /* Multiple categories */
-
-    const selectedCategories =
-        Array.from(
-            document.querySelectorAll(
-                'input[name="stampCategory"]:checked'
-            )
-        ).map(
-            input => input.value
+        console.log(
+            "FINAL IMAGE URLS:",
+            imageUrls
         );
 
 
-    const stamp = {
+        /* ==============================
+           BUILD STAMP DATA
+        ============================== */
 
-        name:
-            document.getElementById("stampName")
-                .value,
+        const stamp = {
 
-        description:
-            document.getElementById("stampDescription")
-                .value,
-
-        price:
-            document.getElementById("stampPrice")
+            name:
+                document.getElementById(
+                    "stampName"
+                )
                 .value
-                ? Number(
-                    document.getElementById("stampPrice")
-                        .value
-                  )
-                : null,
+                .trim(),
 
-        location:
-            document.getElementById("stampLocation")
-                .value,
+            description:
+                document.getElementById(
+                    "stampDescription"
+                )
+                .value
+                .trim(),
 
-        category:
-            selectedCategories,
+            price:
+                document.getElementById(
+                    "stampPrice"
+                )
+                .value
+                    ? Number(
+                        document.getElementById(
+                            "stampPrice"
+                        ).value
+                    )
+                    : null,
 
-        collection_date:
-            document.getElementById("stampDate")
+            location:
+                document.getElementById(
+                    "stampLocation"
+                )
+                .value
+                .trim(),
+
+            category:
+                selectedCategories,
+
+            collection_date:
+                document.getElementById(
+                    "stampDate"
+                )
                 .value || null,
 
-        favorite:
-            document.getElementById("stampFavorite")
+            favorite:
+                document.getElementById(
+                    "stampFavorite"
+                )
                 .checked,
 
-        image_url:
-            imageUrl
-    };
+            image_url:
+                imageUrl,
+
+            image_urls:
+                imageUrls
+        };
 
 
-    let error;
-
-
-    /* UPDATE */
-
-    if (editingStampId) {
-
-        const result =
-            await supabaseClient
-                .from("Stamps")
-                .update(stamp)
-                .eq("id", editingStampId);
-
-        error =
-            result.error;
-    }
-
-
-    /* INSERT */
-
-    else {
-
-        const result =
-            await supabaseClient
-                .from("Stamps")
-                .insert([stamp]);
-
-        error =
-            result.error;
-    }
-
-
-    if (error) {
-
-        console.error(
-            "Error saving stamp:",
-            error
+        console.log(
+            "Saving stamp:",
+            stamp
         );
 
-        alert(
-            "Unable to save stamp: " +
-            error.message
-        );
 
-        return;
+        /* ==============================
+           UPDATE EXISTING STAMP
+        ============================== */
+
+        if (
+            editingStampId !== null
+        ) {
+
+            const {
+                data,
+                error
+            } =
+                await supabaseClient
+                    .from("Stamps")
+                    .update(stamp)
+                    .eq(
+                        "id",
+                        editingStampId
+                    )
+                    .select()
+                    .single();
+
+
+            if (error) {
+
+                console.error(
+                    "Error updating stamp:",
+                    error
+                );
+
+
+                /*
+                    DB update failed.
+
+                    Remove newly uploaded images
+                    so we don't leave orphan files.
+                */
+                if (
+                    newlyUploadedPaths.length
+                ) {
+
+                    const {
+                        error: rollbackError
+                    } =
+                        await supabaseClient.storage
+                            .from("stamps")
+                            .remove(
+                                newlyUploadedPaths
+                            );
+
+
+                    if (rollbackError) {
+
+                        console.error(
+                            "Unable to roll back uploaded images:",
+                            rollbackError
+                        );
+                    }
+                }
+
+
+                alert(
+                    "Unable to update stamp: " +
+                    error.message
+                );
+
+                return;
+            }
+
+
+            console.log(
+                "Stamp updated successfully:",
+                data
+            );
+
+
+            /*
+                Database is now correct.
+
+                Only now remove images that were
+                deleted/replaced from the edit form.
+            */
+            if (
+                window.removedImageUrls.length
+            ) {
+
+                const cleanupResult =
+                    await deleteStorageImages(
+                        window.removedImageUrls,
+                        editingStampId
+                    );
+
+
+                if (
+                    !cleanupResult.success
+                ) {
+
+                    console.warn(
+                        "Stamp updated, but some removed images could not be deleted from Storage."
+                    );
+
+
+                    alert(
+                        "Stamp updated successfully.\n\n" +
+                        "However, one or more removed images could not be deleted from Storage."
+                    );
+
+                } else {
+
+                    alert(
+                        "Stamp updated successfully!"
+                    );
+                }
+
+            } else {
+
+                alert(
+                    "Stamp updated successfully!"
+                );
+            }
+        }
+
+
+        /* ==============================
+           INSERT NEW STAMP
+        ============================== */
+
+        else {
+
+            const {
+                data,
+                error
+            } =
+                await supabaseClient
+                    .from("Stamps")
+                    .insert([
+                        stamp
+                    ])
+                    .select()
+                    .single();
+
+
+            if (error) {
+
+                console.error(
+                    "Error adding stamp:",
+                    error
+                );
+
+
+                /*
+                    Roll back uploaded images
+                    when DB insert fails.
+                */
+                if (
+                    newlyUploadedPaths.length
+                ) {
+
+                    const {
+                        error: rollbackError
+                    } =
+                        await supabaseClient.storage
+                            .from("stamps")
+                            .remove(
+                                newlyUploadedPaths
+                            );
+
+
+                    if (rollbackError) {
+
+                        console.error(
+                            "Unable to roll back uploaded images:",
+                            rollbackError
+                        );
+                    }
+                }
+
+
+                alert(
+                    "Unable to add stamp: " +
+                    error.message
+                );
+
+                return;
+            }
+
+
+            console.log(
+                "Stamp added successfully:",
+                data
+            );
+
+
+            alert(
+                "Stamp added successfully!"
+            );
+        }
+
+
+        /* ==============================
+           RESET + RELOAD
+        ============================== */
+
+        resetStampForm();
+
+        await loadStamps();
     }
-
-
-    alert(
-        editingStampId
-            ? "Stamp updated successfully!"
-            : "Stamp added successfully!"
-    );
-
-
-    resetStampForm();
-
-    loadStamps();
-});
+);
 
 
 /* ==============================
    FILTER EVENTS
 ============================== */
 
-document.getElementById("searchInput")
+document
+    .getElementById("searchInput")
     .addEventListener(
         "input",
         filterStamps
     );
 
 
-document.getElementById("categoryFilter")
+document
+    .getElementById("categoryFilter")
     .addEventListener(
         "change",
         filterStamps
     );
 
 
-document.getElementById("favoriteFilter")
+document
+    .getElementById("favoriteFilter")
     .addEventListener(
         "change",
         filterStamps
     );
 
 
-document.getElementById("sortFilter")
+document
+    .getElementById("sortFilter")
     .addEventListener(
         "change",
         filterStamps
@@ -1580,19 +3353,190 @@ document.getElementById("sortFilter")
    CLEAR FILTERS
 ============================== */
 
-document.getElementById("clearFiltersButton")
-    .addEventListener("click", () => {
+document
+    .getElementById("clearFiltersButton")
+    .addEventListener(
+        "click",
+        () => {
 
-        document.getElementById("searchInput").value = "";
+            document.getElementById(
+                "searchInput"
+            ).value = "";
 
-        document.getElementById("categoryFilter").value = "all";
+            document.getElementById(
+                "categoryFilter"
+            ).value = "all";
 
-        document.getElementById("favoriteFilter").value = "all";
+            document.getElementById(
+                "favoriteFilter"
+            ).value = "all";
 
-        document.getElementById("sortFilter").value = "newest";
+            document.getElementById(
+                "sortFilter"
+            ).value = "newest";
 
-        filterStamps();
-    });
+            filterStamps();
+        }
+    );
+
+
+/* ==============================
+   EXPORT COLLECTION
+============================== */
+
+document
+    .getElementById("exportCollectionButton")
+    .addEventListener(
+        "click",
+        () => {
+
+            const fields = [
+                "id",
+                "name",
+                "description",
+                "price",
+                "location",
+                "category",
+                "collection_date",
+                "favorite",
+                "image_url",
+                "image_urls"
+            ];
+
+
+            const collection =
+                allStamps.map(
+                    stamp =>
+                        Object.fromEntries(
+                            fields.map(
+                                field => [
+                                    field,
+                                    stamp[field] ?? null
+                                ]
+                            )
+                        )
+                );
+
+
+            const now =
+                new Date();
+
+
+            const today =
+                `${now.getFullYear()}-${
+                    String(
+                        now.getMonth() + 1
+                    ).padStart(2, "0")
+                }-${
+                    String(
+                        now.getDate()
+                    ).padStart(2, "0")
+                }`;
+
+
+            const backup = {
+
+                metadata: {
+
+                    application:
+                        "My Stamp Collection",
+
+                    exportVersion:
+                        1,
+
+                    exportedAt:
+                        new Date().toISOString(),
+
+                    stampCount:
+                        collection.length
+                },
+
+                stamps:
+                    collection
+            };
+
+
+            const blob =
+                new Blob(
+                    [
+                        JSON.stringify(
+                            backup,
+                            null,
+                            2
+                        )
+                    ],
+                    {
+                        type:
+                            "application/json"
+                    }
+                );
+
+
+            const url =
+                URL.createObjectURL(
+                    blob
+                );
+
+
+            const link =
+                document.createElement(
+                    "a"
+                );
+
+
+            link.href =
+                url;
+
+
+            link.download =
+                `stamp-collection-backup-${today}.json`;
+
+
+            document.body.appendChild(
+                link
+            );
+
+
+            link.click();
+
+
+            link.remove();
+
+
+            setTimeout(
+                () =>
+                    URL.revokeObjectURL(
+                        url
+                    ),
+                1000
+            );
+
+
+            const exportStatus =
+                document.getElementById(
+                    "exportStatus"
+                );
+
+
+            if (exportStatus) {
+
+                exportStatus.textContent =
+                    "JSON backup downloaded.";
+
+
+                setTimeout(
+                    () => {
+
+                        exportStatus.textContent =
+                            "";
+
+                    },
+                    4000
+                );
+            }
+        }
+    );
+
 
 /* ==============================
    EDIT STAMP
@@ -1608,21 +3552,46 @@ function editStamp(id) {
 
     if (!stamp) {
 
-        alert("Stamp not found.");
+        alert(
+            "Stamp not found."
+        );
 
         return;
     }
 
 
-    editingStampId = id;
+    /*
+        Clear any previous temporary
+        image state.
+    */
+    revokeImagePreviewUrls();
+
+
+    window.editingImageItems = [];
+
+    window.removedImageUrls = [];
+
+
+    pendingImageAction = {
+        type: "add",
+        index: null
+    };
+
+
+    editingStampId =
+        id;
 
 
     /* Change title */
 
     const formTitle =
-        document.querySelector("#addForm h2");
+        document.querySelector(
+            "#addForm h2"
+        );
+
 
     if (formTitle) {
+
         formTitle.textContent =
             "Edit Stamp";
     }
@@ -1635,7 +3604,9 @@ function editStamp(id) {
             'button[type="submit"]'
         );
 
+
     if (submitButton) {
+
         submitButton.textContent =
             "Save Changes";
     }
@@ -1643,24 +3614,28 @@ function editStamp(id) {
 
     /* Fill existing information */
 
-    document.getElementById("stampName")
-        .value =
-            stamp.name || "";
+    document.getElementById(
+        "stampName"
+    ).value =
+        stamp.name || "";
 
 
-    document.getElementById("stampDescription")
-        .value =
-            stamp.description || "";
+    document.getElementById(
+        "stampDescription"
+    ).value =
+        stamp.description || "";
 
 
-    document.getElementById("stampPrice")
-        .value =
-            stamp.price ?? "";
+    document.getElementById(
+        "stampPrice"
+    ).value =
+        stamp.price ?? "";
 
 
-    document.getElementById("stampLocation")
-        .value =
-            stamp.location || "";
+    document.getElementById(
+        "stampLocation"
+    ).value =
+        stamp.location || "";
 
 
     /* Categories */
@@ -1673,52 +3648,57 @@ function editStamp(id) {
                 : [];
 
 
-    renderCategoryCheckboxes(stampCategories);
+    renderCategoryCheckboxes(
+        stampCategories
+    );
 
 
     /* Date */
 
-    document.getElementById("stampDate")
-        .value =
-            stamp.collection_date || "";
+    document.getElementById(
+        "stampDate"
+    ).value =
+        stamp.collection_date || "";
 
 
     /* Favorite */
 
-    document.getElementById("stampFavorite")
-        .checked =
-            stamp.favorite || false;
+    document.getElementById(
+        "stampFavorite"
+    ).checked =
+        stamp.favorite || false;
 
 
-    /* Existing image */
+    /* ==============================
+       EXISTING IMAGES
+    ============================== */
 
-    const oldPreview =
-        document.getElementById("imagePreview");
-
-    if (oldPreview) {
-        oldPreview.remove();
-    }
-
-
-    if (stamp.image_url) {
-
-        const preview =
-            document.createElement("img");
-
-        preview.id =
-            "imagePreview";
-
-        preview.className =
-            "image-preview";
-
-        preview.src =
-            stamp.image_url;
+    const existingImageUrls =
+        Array.isArray(stamp.image_urls) &&
+        stamp.image_urls.length > 0
+            ? stamp.image_urls
+            : stamp.image_url
+                ? [stamp.image_url]
+                : [];
 
 
-        stampImageInput
-            .parentElement
-            .appendChild(preview);
-    }
+    /*
+        Convert existing URLs into
+        editable image items.
+    */
+    window.editingImageItems =
+        existingImageUrls.map(
+            imageUrl => ({
+                kind: "existing",
+                url: imageUrl
+            })
+        );
+
+
+    window.removedImageUrls = [];
+
+
+    renderImagePreviews();
 
 
     /* Open popup */
@@ -1727,14 +3707,14 @@ function editStamp(id) {
         "editing-mode"
     );
 
+
     addForm.style.display =
         "block";
+
 
     addStampButton.style.display =
         "none";
 
-
-    /* Prevent background scrolling */
 
     document.body.classList.add(
         "editing-popup-open"
@@ -1756,7 +3736,9 @@ async function deleteStamp(id) {
 
     if (!stamp) {
 
-        alert("Stamp not found.");
+        alert(
+            "Stamp not found."
+        );
 
         return;
     }
@@ -1773,11 +3755,62 @@ async function deleteStamp(id) {
     }
 
 
-    const { error: deleteError } =
+    /*
+        Collect all image URLs belonging
+        to this stamp.
+    */
+    const sourceUrls =
+        getStampImageUrls(
+            stamp
+        );
+
+
+    /*
+        Delete Storage images first.
+
+        If this fails, keep the database
+        record so we don't end up with
+        a broken stamp.
+    */
+    const storageResult =
+        await deleteStorageImages(
+            sourceUrls,
+            id
+        );
+
+
+    if (
+        !storageResult.success
+    ) {
+
+        console.error(
+            "Unable to delete stamp images:",
+            storageResult.error
+        );
+
+
+        alert(
+            "Unable to delete the stamp images.\n\n" +
+            "The stamp record was kept."
+        );
+
+        return;
+    }
+
+
+    /*
+        Now delete the database record.
+    */
+    const {
+        error: deleteError
+    } =
         await supabaseClient
             .from("Stamps")
             .delete()
-            .eq("id", id);
+            .eq(
+                "id",
+                id
+            );
 
 
     if (deleteError) {
@@ -1787,70 +3820,33 @@ async function deleteStamp(id) {
             deleteError
         );
 
+
+        /*
+            The Storage images have already
+            been deleted at this point.
+
+            The DB record remains, which means
+            the image data cannot be recovered
+            from Storage.
+
+            Report clearly to the user.
+        */
         alert(
-            "Unable to delete stamp: " +
-            deleteError.message
+            "Unable to delete the stamp record: " +
+            deleteError.message +
+            "\n\nThe stamp images were already removed from Storage."
         );
 
         return;
     }
 
 
-    /* Delete image */
-
-    if (stamp.image_url) {
-
-        try {
-
-            const imageUrl =
-                new URL(stamp.image_url);
-
-
-            const pathParts =
-                imageUrl.pathname.split(
-                    "/storage/v1/object/public/stamps/"
-                );
-
-
-            if (pathParts.length === 2) {
-
-                const filePath =
-                    decodeURIComponent(
-                        pathParts[1]
-                    );
-
-
-                const { error: storageError } =
-                    await supabaseClient.storage
-                        .from("stamps")
-                        .remove([filePath]);
-
-
-                if (storageError) {
-
-                    console.error(
-                        "Storage deletion error:",
-                        storageError
-                    );
-                }
-            }
-
-        } catch (storageError) {
-
-            console.error(
-                "Unable to determine image path:",
-                storageError
-            );
-        }
-    }
-
-
     alert(
-        "Stamp and its photo deleted successfully!"
+        "Stamp and its images deleted successfully!"
     );
 
 
-    loadStamps();
+    await loadStamps();
 }
 
 
@@ -1868,7 +3864,9 @@ async function toggleFavorite(id) {
 
     if (!stamp) {
 
-        alert("Stamp not found.");
+        alert(
+            "Stamp not found."
+        );
 
         return;
     }
@@ -1878,13 +3876,18 @@ async function toggleFavorite(id) {
         !stamp.favorite;
 
 
-    const { error } =
+    const {
+        error
+    } =
         await supabaseClient
             .from("Stamps")
             .update({
                 favorite: newFavorite
             })
-            .eq("id", id);
+            .eq(
+                "id",
+                id
+            );
 
 
     if (error) {
@@ -1912,25 +3915,96 @@ async function toggleFavorite(id) {
 
 
 /* ==============================
+   CHANGE MAIN CARD IMAGE
+============================== */
+
+function changeMainImage(
+    stampId,
+    imageUrl,
+    thumbnail
+) {
+
+    const mainImage =
+        document.getElementById(
+            `main-image-${stampId}`
+        );
+
+
+    if (!mainImage) {
+        return;
+    }
+
+
+    mainImage.src =
+        imageUrl;
+
+
+    const cardImage =
+        thumbnail.closest(
+            ".card-image"
+        );
+
+
+    if (!cardImage) {
+        return;
+    }
+
+
+    cardImage
+        .querySelectorAll(
+            ".image-thumbnail"
+        )
+        .forEach(item => {
+
+            item.classList.remove(
+                "active"
+            );
+
+        });
+
+
+    thumbnail.classList.add(
+        "active"
+    );
+}
+
+
+/* ==============================
    STAMP DETAILS POPUP
 ============================== */
 
-function handleStampImageClick(event, id) {
+function handleStampImageClick(
+    event,
+    id
+) {
 
-    const addForm = document.getElementById("addForm");
+    const addForm =
+        document.getElementById(
+            "addForm"
+        );
 
-    // If Add/Edit popup is open,
-    // clicking a stamp image should only close the popup.
+
+    /*
+        If Add/Edit popup is open,
+        clicking a stamp image should
+        only close the popup.
+    */
     if (
         addForm &&
         addForm.style.display !== "none"
     ) {
+
         event.stopPropagation();
+
         resetStampForm();
+
         return;
     }
 
-    // Otherwise, open the image preview
+
+    /*
+        Otherwise open image preview.
+    */
     openStampModal(id);
 }
 
@@ -1948,24 +4022,175 @@ function openStampModal(id) {
     }
 
 
+    window.currentModalStampId =
+        id;
+
+
+    window.currentModalImageIndex =
+        0;
+
+
     const modal =
-        document.getElementById("stampModal");
+        document.getElementById(
+            "stampModal"
+        );
+
 
     const modalContent =
-        document.getElementById("modalContent");
+        document.getElementById(
+            "modalContent"
+        );
+
+
+    const imageUrls =
+        Array.isArray(stamp.image_urls) &&
+        stamp.image_urls.length > 0
+            ? stamp.image_urls
+            : stamp.image_url
+                ? [stamp.image_url]
+                : [];
 
 
     const image =
-        stamp.image_url
-
+        imageUrls.length > 0
             ? `
-                <img
-                    class="modal-image"
-                    src="${stamp.image_url}"
-                    alt="${stamp.name || "Stamp"}"
-                >
-              `
+                <div class="modal-image-gallery">
 
+                    <div class="viewer-toolbar">
+
+                        <span
+                            id="modalImageCounter"
+                            aria-live="polite"
+                        >
+                            1 / ${imageUrls.length}
+                        </span>
+
+                        <div class="viewer-tools">
+
+                            <button
+                                type="button"
+                                onclick="toggleModalZoom()"
+                                aria-label="Zoom image"
+                            >
+                                Zoom
+                            </button>
+
+                            <button
+                                type="button"
+                                onclick="toggleModalFullscreen()"
+                                aria-label="Toggle fullscreen"
+                            >
+                                Fullscreen
+                            </button>
+
+                        </div>
+
+                    </div>
+
+
+                    <div
+                        class="modal-main-image-container"
+                        id="modalImageStage"
+                    >
+
+                        ${
+                            imageUrls.length > 1
+                                ? `
+                                    <button
+                                        type="button"
+                                        aria-label="Previous image"
+                                        class="modal-arrow modal-arrow-left"
+                                        onclick="
+                                            event.stopPropagation();
+                                            changeModalImageByStep(-1);
+                                        "
+                                    >
+                                        ‹
+                                    </button>
+                                  `
+                                : ""
+                        }
+
+
+                        <img
+                            id="modal-main-image"
+                            class="modal-main-image"
+                            src="${imageUrls[0]}"
+                            alt="${stamp.name || "Stamp"}"
+                        >
+
+
+                        ${
+                            imageUrls.length > 1
+                                ? `
+                                    <button
+                                        type="button"
+                                        aria-label="Next image"
+                                        class="modal-arrow modal-arrow-right"
+                                        onclick="
+                                            event.stopPropagation();
+                                            changeModalImageByStep(1);
+                                        "
+                                    >
+                                        ›
+                                    </button>
+                                  `
+                                : ""
+                        }
+
+                    </div>
+
+
+                    ${
+                        imageUrls.length > 1
+                            ? `
+                                <div class="modal-thumbnails">
+
+                                    ${imageUrls.map(
+                                        (imageUrl, index) => `
+
+                                        <img
+                                            class="
+                                                modal-thumbnail
+                                                ${index === 0 ? "active" : ""}
+                                            "
+                                            src="${imageUrl}"
+                                            alt="${stamp.name || "Stamp"} photo ${index + 1}"
+                                            tabindex="0"
+                                            role="button"
+                                            aria-label="Show image ${index + 1} of ${imageUrls.length}"
+                                            onkeydown="
+                                                if(
+                                                    event.key === 'Enter' ||
+                                                    event.key === ' '
+                                                ){
+                                                    event.preventDefault();
+                                                    changeModalImage(
+                                                        '${escapeAttributeJavaScript(imageUrl)}',
+                                                        this
+                                                    );
+                                                }
+                                            "
+                                            onclick="
+                                                event.stopPropagation();
+
+                                                changeModalImage(
+                                                    '${escapeAttributeJavaScript(imageUrl)}',
+                                                    this
+                                                );
+                                            "
+                                        >
+
+                                    `
+                                    ).join("")}
+
+                                </div>
+                              `
+                            : ""
+                    }
+
+                </div>
+              `
             : "";
 
 
@@ -1998,43 +4223,71 @@ function openStampModal(id) {
             : "";
 
 
+    const locationIcon =
+        `<svg class="modal-info-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M20 10c0 5-8 12-8 12S4 15 4 10a8 8 0 1 1 16 0Z"></path>
+            <circle cx="12" cy="10" r="2.5"></circle>
+        </svg>`;
+
+
+    const dateIcon =
+        `<svg class="modal-info-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <rect x="3" y="5" width="18" height="16" rx="2"></rect>
+            <path d="M16 3v4M8 3v4M3 10h18"></path>
+        </svg>`;
+
+
+    const categoryIcon =
+        `<svg class="modal-info-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="m20.6 13.4-7.2 7.2a2 2 0 0 1-2.8 0L3 13V4h9l8.6 6.6a2 2 0 0 1 0 2.8Z"></path>
+            <circle cx="7.5" cy="8.5" r="1"></circle>
+        </svg>`;
+
+
     modalContent.innerHTML = `
 
         ${image}
+
 
         <div class="modal-title">
             ${stamp.name || "Unnamed Stamp"}
         </div>
 
+
         <div class="modal-description">
             ${stamp.description || "No description"}
         </div>
+
 
         <div class="modal-info">
 
             ${
                 stamp.location
-                    ? `📍 ${stamp.location}<br>`
+                    ? `${locationIcon} ${stamp.location}<br>`
                     : ""
             }
 
+
             ${
                 stamp.collection_date
-                    ? `📅 ${formatDate(
+                    ? `${dateIcon} ${formatDate(
                         stamp.collection_date
                     )}<br>`
                     : ""
             }
 
+
             ${
                 categoryText
-                    ? `🏷️ ${categoryText}<br>`
+                    ? `${categoryIcon} ${categoryText}<br>`
                     : ""
             }
+
 
             ${favorite}
 
         </div>
+
 
         <div class="modal-price">
             ${price}
@@ -2042,7 +4295,347 @@ function openStampModal(id) {
     `;
 
 
-    modal.style.display = "flex";
+    modal.style.display =
+        "flex";
+
+
+    document.body.classList.add(
+        "stamp-modal-open"
+    );
+}
+
+
+/* ==============================
+   MODAL IMAGE SWITCH
+============================== */
+
+function changeModalImage(
+    imageUrl,
+    thumbnail
+) {
+
+    const mainImage =
+        document.getElementById(
+            "modal-main-image"
+        );
+
+
+    if (!mainImage) {
+        return;
+    }
+
+
+    mainImage.src =
+        imageUrl;
+
+
+    mainImage.classList.remove(
+        "zoomed"
+    );
+
+
+    const stamp =
+        allStamps.find(
+            item =>
+                item.id ===
+                window.currentModalStampId
+        );
+
+
+    const urls =
+        stamp
+            ? (
+                Array.isArray(
+                    stamp.image_urls
+                ) &&
+                stamp.image_urls.length
+                    ? stamp.image_urls
+                    : stamp.image_url
+                        ? [stamp.image_url]
+                        : []
+              )
+            : [];
+
+
+    window.currentModalImageIndex =
+        Math.max(
+            0,
+            urls.indexOf(imageUrl)
+        );
+
+
+    updateModalImageCounter();
+
+
+    if (!thumbnail) {
+        return;
+    }
+
+
+    const thumbnailContainer =
+        thumbnail.closest(
+            ".modal-thumbnails"
+        );
+
+
+    if (!thumbnailContainer) {
+        return;
+    }
+
+
+    thumbnailContainer
+        .querySelectorAll(
+            ".modal-thumbnail"
+        )
+        .forEach(item => {
+
+            item.classList.remove(
+                "active"
+            );
+
+        });
+
+
+    thumbnail.classList.add(
+        "active"
+    );
+}
+
+
+/* ==============================
+   MODAL IMAGE NEXT / PREVIOUS
+============================== */
+
+function changeModalImageByStep(
+    step
+) {
+
+    const stampId =
+        window.currentModalStampId;
+
+
+    if (!stampId) {
+        return;
+    }
+
+
+    const stamp =
+        allStamps.find(
+            item => item.id === stampId
+        );
+
+
+    if (!stamp) {
+        return;
+    }
+
+
+    const imageUrls =
+        Array.isArray(stamp.image_urls) &&
+        stamp.image_urls.length > 0
+            ? stamp.image_urls
+            : stamp.image_url
+                ? [stamp.image_url]
+                : [];
+
+
+    if (
+        imageUrls.length <= 1
+    ) {
+        return;
+    }
+
+
+    const mainImage =
+        document.getElementById(
+            "modal-main-image"
+        );
+
+
+    if (!mainImage) {
+        return;
+    }
+
+
+    let currentIndex =
+        imageUrls.indexOf(
+            mainImage.src
+        );
+
+
+    if (currentIndex === -1) {
+        currentIndex = 0;
+    }
+
+
+    let newIndex =
+        currentIndex + step;
+
+
+    if (newIndex < 0) {
+
+        newIndex =
+            imageUrls.length - 1;
+    }
+
+
+    if (
+        newIndex >= imageUrls.length
+    ) {
+
+        newIndex = 0;
+    }
+
+
+    mainImage.src =
+        imageUrls[newIndex];
+
+
+    mainImage.classList.remove(
+        "zoomed"
+    );
+
+
+    window.currentModalImageIndex =
+        newIndex;
+
+
+    updateModalImageCounter();
+
+
+    const thumbnails =
+        document.querySelectorAll(
+            ".modal-thumbnail"
+        );
+
+
+    thumbnails.forEach(
+        (thumbnail, index) => {
+
+            thumbnail.classList.toggle(
+                "active",
+                index === newIndex
+            );
+
+        }
+    );
+}
+
+
+/* ==============================
+   MODAL COUNTER
+============================== */
+
+function updateModalImageCounter() {
+
+    const counter =
+        document.getElementById(
+            "modalImageCounter"
+        );
+
+
+    const stamp =
+        allStamps.find(
+            item =>
+                item.id ===
+                window.currentModalStampId
+        );
+
+
+    const urls =
+        stamp
+            ? (
+                Array.isArray(
+                    stamp.image_urls
+                ) &&
+                stamp.image_urls.length
+                    ? stamp.image_urls
+                    : stamp.image_url
+                        ? [stamp.image_url]
+                        : []
+              )
+            : [];
+
+
+    if (counter) {
+
+        counter.textContent =
+            `${window.currentModalImageIndex + 1} / ${urls.length}`;
+    }
+}
+
+
+/* ==============================
+   MODAL ZOOM
+============================== */
+
+function toggleModalZoom() {
+
+    document
+        .getElementById(
+            "modal-main-image"
+        )
+        ?.classList.toggle(
+            "zoomed"
+        );
+}
+
+
+/* ==============================
+   MODAL FULLSCREEN
+============================== */
+
+async function toggleModalFullscreen() {
+
+    const stage =
+        document.getElementById(
+            "modalImageStage"
+        );
+
+
+    if (!stage) {
+        return;
+    }
+
+
+    try {
+
+        if (
+            document.fullscreenElement
+        ) {
+
+            await document.exitFullscreen();
+
+        } else {
+
+            await stage.requestFullscreen();
+        }
+
+    } catch (error) {
+
+        console.warn(
+            "Fullscreen is not available:",
+            error
+        );
+    }
+}
+
+
+/* ==============================
+   CLOSE STAMP MODAL
+============================== */
+
+function closeStampModal() {
+
+    document.getElementById(
+        "stampModal"
+    ).style.display =
+        "none";
+
+
+    document.body.classList.remove(
+        "stamp-modal-open"
+    );
 }
 
 
@@ -2050,30 +4643,94 @@ function openStampModal(id) {
    CLOSE DETAILS POPUP
 ============================== */
 
-document.getElementById("modalClose")
-    .addEventListener("click", () => {
+document
+    .getElementById("modalClose")
+    .addEventListener(
+        "click",
+        closeStampModal
+    );
 
-        document.getElementById("stampModal")
-            .style.display = "none";
-    });
+
+document
+    .getElementById("stampModal")
+    .addEventListener(
+        "click",
+        event => {
+
+            if (
+                event.target.id ===
+                "stampModal"
+            ) {
+
+                closeStampModal();
+            }
+        }
+    );
 
 
-document.getElementById("stampModal")
-    .addEventListener("click", (event) => {
+/* ==============================
+   KEYBOARD CONTROLS
+============================== */
+
+document.addEventListener(
+    "keydown",
+    event => {
+
+        const modal =
+            document.getElementById(
+                "stampModal"
+            );
+
 
         if (
-            event.target.id === "stampModal"
+            !modal ||
+            modal.style.display !== "flex"
+        ) {
+            return;
+        }
+
+
+        if (
+            event.key === "Escape"
         ) {
 
-            document.getElementById("stampModal")
-                .style.display = "none";
+            closeStampModal();
         }
-    });
+
+
+        if (
+            event.key === "ArrowLeft"
+        ) {
+
+            changeModalImageByStep(
+                -1
+            );
+        }
+
+
+        if (
+            event.key === "ArrowRight"
+        ) {
+
+            changeModalImageByStep(
+                1
+            );
+        }
+    }
+);
 
 
 /* ==============================
    START
 ============================== */
 
+/*
+    Set up the new image controls
+    before loading the collection.
+*/
+setupImageUploadUI();
+
+
 loadCategories();
+
 loadStamps();
